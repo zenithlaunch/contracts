@@ -1,0 +1,22 @@
+{
+  "name": "kaslaunch-contracts",
+  "version": "1.0.0",
+  "description": "KasLaunch — Hybrid token launchpad for Kaspa L2 (EVM-compatible)",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "deploy:testnet": "hardhat run scripts/deployTestnet.ts --network kasplex_testnet",
+    "deploy:mainnet": "hardhat run scripts/deploy.ts --network igra_mainnet",
+    "clean": "hardhat clean"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@openzeppelin/contracts": "^5.0.2",
+    "@types/node": "^20.12.7",
+    "dotenv": "^16.4.5",
+    "hardhat": "^2.22.3",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
+  },
+  "dependencies": {}
+}
