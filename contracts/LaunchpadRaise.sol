@@ -54,6 +54,10 @@ contract LaunchpadRaise is ReentrancyGuard, Ownable {
     mapping(address => uint256) public investments;
     mapping(address => uint256) public tokensClaimed;
     mapping(address => bool)    public refundClaimed;
+    mapping(address => uint256) public pendingWithdrawals;
+    event KasPending(address indexed recipient, uint256 amount);
+    event KasWithdrawn(address indexed recipient, uint256 amount);
+    event PendingRedirected(address indexed from, address indexed to, uint256 amount);
     event RaiseCreated(
         address indexed raiseContract,
         address indexed projectWallet,
@@ -215,10 +219,46 @@ contract LaunchpadRaise is ReentrancyGuard, Ownable {
         uint256 platformFee  = (totalRaised * PLATFORM_FEE_BPS) / 10_000;
         uint256 kasToProject = totalRaised - platformFee;
 
-        _sendKas(projectWallet, kasToProject);
-        _sendKas(owner(), platformFee);
+        // Pull-payment: attempt direct send; on failure, credit for manual withdrawal.
+        // Prevents a non-payable projectWallet or owner() from locking all investor funds.
+        (bool okProject, ) = payable(projectWallet).call{value: kasToProject}("");
+        if (!okProject) {
+            pendingWithdrawals[projectWallet] += kasToProject;
+            emit KasPending(projectWallet, kasToProject);
+        }
+
+        (bool okOwner, ) = payable(owner()).call{value: platformFee}("");
+        if (!okOwner) {
+            pendingWithdrawals[owner()] += platformFee;
+            emit KasPending(owner(), platformFee);
+        }
 
         emit Finalized(projectWallet, kasToProject, platformFee, address(token), block.timestamp);
+    }
+
+    // Withdraw pending KAS to a caller-chosen address.
+    // Needed because projectWallet or owner() may be a contract that cannot
+    // accept native KAS — the credited party directs the funds to any EOA/safe.
+    function withdrawPending(address to) external nonReentrant {
+        require(to != address(0), "LaunchpadRaise: zero recipient");
+        uint256 amount = pendingWithdrawals[msg.sender];
+        require(amount > 0, "LaunchpadRaise: nothing to withdraw");
+        pendingWithdrawals[msg.sender] = 0;
+        _sendKas(to, amount);
+        emit KasWithdrawn(msg.sender, amount);
+    }
+
+    // Emergency escape: owner can redirect a stranded pending balance to a new
+    // address when the credited contract cannot originate any call itself.
+    // Trust assumption: owner is a multisig; only pending (not investor) funds
+    // are affected. Emits an auditable event.
+    function redirectPending(address from, address to) external onlyOwner nonReentrant {
+        require(to != address(0), "LaunchpadRaise: zero recipient");
+        uint256 amount = pendingWithdrawals[from];
+        require(amount > 0, "LaunchpadRaise: nothing to redirect");
+        pendingWithdrawals[from] = 0;
+        _sendKas(to, amount);
+        emit PendingRedirected(from, to, amount);
     }
 
     function refund() external nonReentrant raiseEnded {

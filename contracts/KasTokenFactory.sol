@@ -20,7 +20,11 @@ interface IKasLaunch {
 contract KasTokenFactory is Ownable, ReentrancyGuard {
     uint256 public constant INITIAL_SUPPLY = 1_000_000_000 * 1e18; // 1 billion
 
+    uint256 public constant KASLAUNCH_TIMELOCK = 2 days;
+
     address public kasLaunchAddress;
+    address public pendingKasLaunch;
+    uint256 public pendingKasLaunchValidAt;
 
     struct TokenRecord {
         address tokenAddress;
@@ -34,6 +38,8 @@ contract KasTokenFactory is Ownable, ReentrancyGuard {
     TokenRecord[] public deployedTokens;
     mapping(address => address[]) public creatorTokens; // creator → [tokenAddresses]
 
+    event KasLaunchProposed(address indexed addr, uint256 validAt);
+    event KasLaunchAccepted(address indexed addr);
     event TokenDeployed(
         address indexed token,
         address indexed creator,
@@ -92,9 +98,20 @@ contract KasTokenFactory is Ownable, ReentrancyGuard {
         emit TokenDeployed(tokenAddress, msg.sender, name, symbol, metadataUri, block.timestamp);
     }
 
-    function setKasLaunchAddress(address addr) external onlyOwner {
+    function proposeKasLaunchAddress(address addr) external onlyOwner {
         require(addr != address(0), "zero address");
-        kasLaunchAddress = addr;
+        pendingKasLaunch        = addr;
+        pendingKasLaunchValidAt = block.timestamp + KASLAUNCH_TIMELOCK;
+        emit KasLaunchProposed(addr, pendingKasLaunchValidAt);
+    }
+
+    function acceptKasLaunchAddress() external onlyOwner {
+        require(pendingKasLaunch != address(0),          "no pending address");
+        require(block.timestamp >= pendingKasLaunchValidAt, "timelock active");
+        kasLaunchAddress = pendingKasLaunch;
+        emit KasLaunchAccepted(pendingKasLaunch);
+        pendingKasLaunch        = address(0);
+        pendingKasLaunchValidAt = 0;
     }
 
     function getDeployedCount() external view returns (uint256) {

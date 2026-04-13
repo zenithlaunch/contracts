@@ -1,6 +1,6 @@
 # Environment files — never commit these
 .env
-.env.mainnet
+.env.*
 .env.local
 .env.*.local
 
@@ -8,17 +8,8 @@
 scripts/send-launch-email.mjs
 
 # Internal docs & planning
-MASTER_PROMPT.md
-ARCHITECTURE.md
-AGENTS.md
+_archive/
 CLAUDE.md
-zenith-design-philosophy.md
-zenith-partnership-igra.md
-zenith-partnership-igra.pdf
-zenith-litepaper.pdf
-gen_pdf.py
-generate_litepaper.py
-screenshots/
 
 # Dependencies
 node_modules
@@ -31,3 +22,9 @@ typechain-types
 
 # Vercel
 .vercel
+
+# OS
+.DS_Store
+
+# Archives
+*.zip

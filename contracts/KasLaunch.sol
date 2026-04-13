@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 interface IUniswapV2Factory {
@@ -31,18 +32,21 @@ interface IUniswapV2Router02 {
 }
 
 contract KasLaunch is ReentrancyGuard, Ownable {
+    using SafeERC20 for IERC20;
     uint256 public constant TOKEN_TOTAL_SUPPLY             = 1_000_000_000 * 1e18;
-    uint256 public constant INITIAL_VIRTUAL_TOKEN_RESERVES = 1_000_000_000 * 1e18;
-    uint256 public constant INITIAL_VIRTUAL_KAS_RESERVES   = 3_000 * 1e18;
+    uint256 public constant INITIAL_VIRTUAL_TOKEN_RESERVES = 800_000_000 * 1e18;
+    uint256 public constant INITIAL_VIRTUAL_KAS_RESERVES   = 105_000 * 1e18;
+    uint256 public constant LP_RESERVE_SUPPLY              = 200_000_000 * 1e18;
     uint256 public constant RESCUE_TIMELOCK                = 7 days;
     uint256 public constant ROUTER_TIMELOCK                = 2 days;
     uint256 public constant LP_SLIPPAGE_BPS                = 300;  // 3% max slippage on graduation LP
-    uint256 public mcapLimit         = 200_000 * 1e18;
-    uint256 public createFee         = 150 * 1e18;
+    uint256 public graduationKasThreshold = 300_000 * 1e18;
+    uint256 public createFee              = 150 * 1e18;
     uint256 public feeBasisPoints    = 100;   // 1%
     uint256 public graduationFeeBps  = 200;   // 2%
 
     address public feeRecipient;
+    address public factory;
     IUniswapV2Router02 public dexRouter;
 
     // Timelock for router changes
@@ -54,6 +58,7 @@ contract KasLaunch is ReentrancyGuard, Ownable {
         uint256 virtualKasReserves;
         uint256 realTokenReserves;
         uint256 realKasReserves;
+        uint256 lpReservedTokens;
         uint256 tokenTotalSupply;
         bool    complete;
         address creator;
@@ -91,6 +96,13 @@ contract KasLaunch is ReentrancyGuard, Ownable {
     );
     event DexRouterProposed(address indexed router, uint256 validAt);
     event DexRouterAccepted(address indexed router);
+    event FactorySet(address indexed factory);
+
+    modifier onlyFactory() {
+        require(msg.sender == factory, "KasLaunch: caller is not factory");
+        _;
+    }
+
     constructor(address feeRecipient_, address dexRouter_) Ownable(msg.sender) {
         require(feeRecipient_ != address(0), "KasLaunch: zero fee recipient");
         feeRecipient = feeRecipient_;
@@ -99,30 +111,40 @@ contract KasLaunch is ReentrancyGuard, Ownable {
 
     receive() external payable {}
 
+    function setFactory(address factory_) external onlyOwner {
+        require(factory_ != address(0), "KasLaunch: zero factory");
+        require(factory == address(0),  "KasLaunch: factory already set");
+        factory = factory_;
+        emit FactorySet(factory_);
+    }
+
     function createPool(
         address token,
         uint256 amount,
         address creator,
         string calldata metadataUri
-    ) external payable nonReentrant {
+    ) external payable nonReentrant onlyFactory {
         require(amount > 0,                                    "KasLaunch: amount zero");
         require(feeRecipient != address(0),                    "KasLaunch: fee recipient not set");
         require(msg.value >= createFee,                        "KasLaunch: insufficient create fee");
         require(bondingCurve[token].tokenMint == address(0),   "KasLaunch: pool exists");
 
-        IERC20(token).transferFrom(msg.sender, address(this), amount);
+        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
 
         _sendKas(feeRecipient, createFee);
 
         uint256 excess = msg.value - createFee;
         if (excess > 0) _sendKas(msg.sender, excess);
 
+        require(amount >= LP_RESERVE_SUPPLY, "KasLaunch: amount below LP reserve");
+
         bondingCurve[token] = TokenCurve({
             tokenMint:             token,
             virtualTokenReserves:  INITIAL_VIRTUAL_TOKEN_RESERVES,
             virtualKasReserves:    INITIAL_VIRTUAL_KAS_RESERVES,
-            realTokenReserves:     amount,
+            realTokenReserves:     amount - LP_RESERVE_SUPPLY,
             realKasReserves:       0,
+            lpReservedTokens:      LP_RESERVE_SUPPLY,
             tokenTotalSupply:      TOKEN_TOTAL_SUPPLY,
             complete:              false,
             creator:               creator,
@@ -142,13 +164,7 @@ contract KasLaunch is ReentrancyGuard, Ownable {
         require(tokenAmount > 0,      "KasLaunch: amount zero");
         require(!curve.complete,      "KasLaunch: curve complete");
 
-        // Keep at least 20% of supply as buffer for graduation liquidity
-        require(tokenAmount < curve.realTokenReserves, "KasLaunch: amount exceeds reserves");
-        uint256 remaining = curve.realTokenReserves - tokenAmount;
-        require(
-            remaining * 100 / curve.tokenTotalSupply >= 20,
-            "KasLaunch: exceeds buy limit"
-        );
+        require(tokenAmount < curve.realTokenReserves, "KasLaunch: insufficient reserves");
 
         uint256 kasCost = calculateBuyCost(curve, tokenAmount);
         require(kasCost <= maxKasCost,    "KasLaunch: slippage exceeded");
@@ -158,7 +174,7 @@ contract KasLaunch is ReentrancyGuard, Ownable {
         uint256 kasNetCost = kasCost - fee;
 
         _sendKas(feeRecipient, fee);
-        IERC20(token).transfer(msg.sender, tokenAmount);
+        IERC20(token).safeTransfer(msg.sender, tokenAmount);
 
         curve.realTokenReserves    -= tokenAmount;
         curve.virtualTokenReserves -= tokenAmount;
@@ -171,7 +187,7 @@ contract KasLaunch is ReentrancyGuard, Ownable {
         emit Trade(token, kasCost, tokenAmount, true, msg.sender, block.timestamp,
             curve.virtualKasReserves, curve.virtualTokenReserves, price);
 
-        if (_marketCap(curve) >= mcapLimit) {
+        if (curve.realKasReserves >= graduationKasThreshold) {
             _graduate(token, curve);
         }
     }
@@ -194,7 +210,7 @@ contract KasLaunch is ReentrancyGuard, Ownable {
         uint256 fee    = (kasOut * feeBasisPoints) / 10_000;
         uint256 netKas = kasOut - fee;
 
-        IERC20(token).transferFrom(msg.sender, address(this), tokenAmount);
+        IERC20(token).safeTransferFrom(msg.sender, address(this), tokenAmount);
 
         _sendKas(feeRecipient, fee);
         _sendKas(msg.sender, netKas);
@@ -216,8 +232,9 @@ contract KasLaunch is ReentrancyGuard, Ownable {
         curve.complete    = true;
         curve.graduatedAt = block.timestamp;
 
-        uint256 totalKas    = curve.realKasReserves;
-        uint256 totalTokens = curve.realTokenReserves;
+        uint256 totalKas             = curve.realKasReserves;
+        uint256 tokensForLp          = curve.lpReservedTokens;
+        uint256 remainingCurveTokens = curve.realTokenReserves;
 
         uint256 graduationFee = (totalKas * graduationFeeBps) / 10_000;
         uint256 kasForLp      = totalKas - graduationFee;
@@ -225,16 +242,17 @@ contract KasLaunch is ReentrancyGuard, Ownable {
         // Zero reserves before external calls (CEI pattern)
         curve.realKasReserves   = 0;
         curve.realTokenReserves = 0;
+        curve.lpReservedTokens  = 0;
 
-        IERC20(token).approve(address(dexRouter), totalTokens);
+        IERC20(token).approve(address(dexRouter), tokensForLp);
 
-        uint256 tokenMin = totalTokens * (10_000 - LP_SLIPPAGE_BPS) / 10_000;
-        uint256 kasMin   = kasForLp   * (10_000 - LP_SLIPPAGE_BPS) / 10_000;
+        uint256 tokenMin = tokensForLp * (10_000 - LP_SLIPPAGE_BPS) / 10_000;
+        uint256 kasMin   = kasForLp    * (10_000 - LP_SLIPPAGE_BPS) / 10_000;
 
         address pair;
         try dexRouter.addLiquidityETH{value: kasForLp}(
             token,
-            totalTokens,
+            tokensForLp,
             tokenMin,
             kasMin,
             address(0xdead), // LP permanently burned — no rug possible
@@ -243,11 +261,14 @@ contract KasLaunch is ReentrancyGuard, Ownable {
             pair = IUniswapV2Factory(dexRouter.factory()).getPair(
                 token, dexRouter.WETH()
             );
+            // Burn unsold curve tokens — they never enter LP
+            IERC20(token).safeTransfer(address(0xdead), remainingCurveTokens);
         } catch {
             // DEX migration failed — restore full state (fee not sent yet)
             IERC20(token).approve(address(dexRouter), 0);
             curve.realKasReserves   = totalKas;
-            curve.realTokenReserves = totalTokens;
+            curve.realTokenReserves = remainingCurveTokens;
+            curve.lpReservedTokens  = tokensForLp;
             curve.complete          = false;
             curve.graduatedAt       = 0;
             return;
@@ -256,7 +277,7 @@ contract KasLaunch is ReentrancyGuard, Ownable {
         // Fee sent only after successful LP creation
         _sendKas(feeRecipient, graduationFee);
 
-        emit Graduated(token, pair, kasForLp, totalTokens, block.timestamp);
+        emit Graduated(token, pair, kasForLp, tokensForLp, block.timestamp);
     }
 
     // KAS cost for buying `tokenAmount` tokens (tokens leave pool).
@@ -316,7 +337,7 @@ contract KasLaunch is ReentrancyGuard, Ownable {
         curve.realKasReserves   = 0;
         curve.realTokenReserves = 0;
         if (kas > 0)    _sendKas(owner(), kas);
-        if (tokens > 0) IERC20(token).transfer(owner(), tokens);
+        if (tokens > 0) IERC20(token).safeTransfer(owner(), tokens);
     }
 
     function setFeeRecipient(address addr) external onlyOwner {
@@ -341,12 +362,13 @@ contract KasLaunch is ReentrancyGuard, Ownable {
         pendingRouterValidAt = 0;
     }
 
-    function setMcapLimit(uint256 limit) external onlyOwner {
-        require(limit > 0, "KasLaunch: zero limit");
-        mcapLimit = limit;
+    function setGraduationKasThreshold(uint256 threshold) external onlyOwner {
+        require(threshold >= 1_000 * 1e18, "KasLaunch: threshold too low"); // min 1k KAS
+        graduationKasThreshold = threshold;
     }
 
     function setCreateFee(uint256 fee) external onlyOwner {
+        require(fee <= 500 * 1e18, "KasLaunch: fee too high"); // max 500 KAS
         createFee = fee;
     }
 
