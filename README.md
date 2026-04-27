@@ -11,7 +11,7 @@
 
 ---
 
-> **Zenith is a pump.fun-style token launchpad** on [Igra Network](https://igralabs.com) (Kaspa L2). Anyone can launch a token in seconds — no presales, no creator allocation, no admin keys. Tokens trade on an xy=k bonding curve and graduate to [ZealousSwap](https://zealousswap.com) DEX automatically.
+> **Zenith is a pump.fun-style token launchpad** on [Igra Network](https://igralabs.com) (Kaspa L2). Anyone can launch a token in seconds — no presales, no creator allocation. Tokens trade on an xy=k bonding curve and graduate to [ZealousSwap](https://zealousswap.com) DEX automatically.
 
 ---
 
@@ -75,14 +75,14 @@ At graduation, remaining curve tokens are burned to `0xdead` and LP is permanent
 
 ## Deployed Contracts
 
-### Mainnet — Igra Network (Chain ID `38833`)
+### Mainnet — Igra Network (Chain ID `38833`) — V2.1
 
 | Contract | Address |
 |---|---|
-| KasLaunch | [`0xd0b4ABE4Eaa07A7Dd776A821639c43B97493f981`](https://explorer.igralabs.com/address/0xd0b4ABE4Eaa07A7Dd776A821639c43B97493f981) |
-| KasTokenFactory | [`0x53FEaD89F09F1bB83636fc3CaAE6446AA56E8058`](https://explorer.igralabs.com/address/0x53FEaD89F09F1bB83636fc3CaAE6446AA56E8058) |
-| LaunchpadFactory | [`0xd4165DA84DbedaC1957313f939EfE31cD916dE53`](https://explorer.igralabs.com/address/0xd4165DA84DbedaC1957313f939EfE31cD916dE53) |
-| ZealousSwapAdapter | [`0x60c26e5f542cdD55D44Fe233e9003B59E89C4Cd6`](https://explorer.igralabs.com/address/0x60c26e5f542cdD55D44Fe233e9003B59E89C4Cd6) |
+| KasLaunch | [`0x3aA3E434F9aBde32b5493eE29E0A409B4f86e40e`](https://explorer.igralabs.com/address/0x3aA3E434F9aBde32b5493eE29E0A409B4f86e40e) |
+| KasTokenFactory | [`0x30526BEE92752b517bf6F42688E8C73C235b1f3c`](https://explorer.igralabs.com/address/0x30526BEE92752b517bf6F42688E8C73C235b1f3c) |
+| LaunchpadFactory | [`0xe6e386FE24EDeD0BBD79f7C712b8BF7a32F995eB`](https://explorer.igralabs.com/address/0xe6e386FE24EDeD0BBD79f7C712b8BF7a32F995eB) |
+| ZealousSwapAdapter | [`0x92042236180F79C76C2C4Fb351374458AA389B73`](https://explorer.igralabs.com/address/0x92042236180F79C76C2C4Fb351374458AA389B73) |
 
 ### Testnet — Igra Galleon (Chain ID `38836`)
 
@@ -112,12 +112,13 @@ All setter functions are `onlyOwner`.
 
 - **Reentrancy guard** on all state-changing functions (OpenZeppelin `ReentrancyGuard`)
 - **SafeERC20** for all token transfers (OpenZeppelin `SafeERC20`)
+- **Deadline parameter** on buy/sell to prevent stale transactions (V2.1)
 - **DEX Router timelock** — router changes require 48-hour delay (`proposeDexRouter` → `acceptDexRouter`)
 - **Emergency rescue timelock** — `rescueGraduatedFunds()` only after 7-day delay post-graduation
 - **LP permanently burned** — sent to `0x000...dEaD` on graduation, liquidity is irrevocable
 - **Graduation rollback** — if DEX call fails, all state changes revert (CEI pattern)
-- **No admin keys on curve** — bonding curve constants are immutable, owner cannot manipulate price
 - **Fee caps** — trading fee hard-capped at 5%, graduation fee at 10% in contract code
+- **sweepExcessKas()** — owner can recover stuck iKAS without touching curve reserves (V2.1)
 
 ---
 
@@ -129,8 +130,8 @@ All setter functions are `onlyOwner`.
 | Frontend | React + Vite + TypeScript, Tailwind CSS |
 | Web3 | wagmi v2, ethers v6 |
 | Metadata | Pinata (IPFS) |
-| Database | Firebase Firestore |
-| Hosting | Vercel |
+| Database | PostgreSQL |
+| Backend | Express + Node.js |
 | DEX | ZealousSwap (Uniswap V2-compatible) |
 | Network | Igra Network (Kaspa L2, EVM-compatible) |
 
@@ -148,9 +149,6 @@ npx hardhat run scripts/testnet/deploy.ts --network igra_galleon
 
 # Deploy to mainnet
 npx hardhat run scripts/mainnet/redeployV2.ts --network igra_mainnet
-
-# Pre-deploy check
-node scripts/predeploy-check.mjs frontend/.env.vercel.mainnet
 ```
 
 Create a `.env` file (never commit):
